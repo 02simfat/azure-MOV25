@@ -16,7 +16,7 @@ Varje veckomapp har en egen README som dokumenterar veckans arbete, med syfte, s
 - [x] V34 - Compute; Driftsättning av Novatrix kundtjänst på en virtuell maskin
 - [x] V35 - IAM och identitet
 - [x] V36 - Nätverk och säkerhet
-- [ ] V37 - Storage
+- [x] V37 - Storage
 - [ ] V38 - IaC med ARM-templates
 - [ ] V39 - Automation och integration
 - [ ] v40 - Virtualiseringsnivåer
