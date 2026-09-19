@@ -59,7 +59,7 @@ Eftersom en virtuell maskin nätverskort (NIC) inte kan flyttas rakt av till ett
    * **VNet / Subnet:** `vnet-novatrix` / `snet-web` (`10.0.1.0/24`)
 4. **Återskapande från disk:** VM:en återskapades utifrån den sparade disken och kopplades till det nya nätverkskortet i `snet-web`. Detta säkerställde att webbapplikationen låg kvar orörd på det nya subnätet.
 ![Nytt nätverkskort i snet-web](ny-nic-vm-novatrix-web.png)
-![VM ansluten till snet-web](Rätt-Vnet.png)
+![VM ansluten till snet-web](Ratt-Vnet.png)
 ---
 
 ## Verifering och Testning av Trafikflöden 
