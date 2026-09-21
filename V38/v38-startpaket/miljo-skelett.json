@@ -5,27 +5,34 @@
     "namePrefix": {
       "type": "string",
       "defaultValue": "novatrix",
-      "metadata": { "description": "Prefix for alla resursnamn, sa att allt hanger ihop." }
+      "metadata": {
+        "description": "Prefix for alla resursnamn, sa att allt hanger ihop."
+      }
     },
     "storageName": {
       "type": "string",
-      "metadata": { "description": "Globalt unikt namn, sma bokstaver och siffror." }
+      "metadata": {
+        "description": "Globalt unikt namn, sma bokstaver och siffror."
+      }
     },
     "location": {
       "type": "string",
       "defaultValue": "swedencentral",
-      "metadata": { "description": "Region for resurserna." }
+      "metadata": {
+        "description": "Region for resurserna."
+      }
     }
   },
-  "variables": {
-  },
+  "variables": {},
   "resources": [
     {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-01-01",
       "name": "[parameters('storageName')]",
       "location": "[parameters('location')]",
-      "sku": { "name": "Standard_LRS" },
+      "sku": {
+        "name": "Standard_LRS"
+      },
       "kind": "StorageV2"
     },
     {
@@ -35,13 +42,21 @@
       "location": "[parameters('location')]",
       "properties": {
         "addressSpace": {
-          "addressPrefixes": [ "10.0.0.0/16" ]
+          "addressPrefixes": [
+            "10.0.0.0/16"
+          ]
         },
         "subnets": [
           {
             "name": "snet-web",
             "properties": {
               "addressPrefix": "10.0.1.0/24"
+            }
+          },
+          {
+            "name": "snet-db",
+            "properties": {
+              "addressPrefix": "10.0.2.0/24"
             }
           }
         ]
@@ -64,13 +79,15 @@
               "sourceAddressPrefix": "Internet",
               "sourcePortRange": "*",
               "destinationAddressPrefix": "*",
-              "destinationPortRanges": [ "80", "443" ]
+              "destinationPortRanges": [
+                "80",
+                "443"
+              ]
             }
           }
         ]
       }
     }
   ],
-  "outputs": {
-  }
+  "outputs": {}
 }
