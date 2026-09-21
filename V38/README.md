@@ -244,7 +244,15 @@ git push
 Portalen visar nu båda subnäten:
  
 ![Subnäten snet-web och snet-db](bilder/06-subnat-web-och-db.png)
- 
+
+**Historiken och ändringen på GitHub:**
+
+![Commit-historik på GitHub](bilder/08-github-historik.png)
+
+![Ändringen som visas på GitHub](bilder/09-github-diff-snet-db.png)
+
+Länk till commiten: https://github.com/02simfat/azure-MOV25/commit/dd79299
+
 ## Versionshantering syfte
 
 - **Spårbarhet:** varje commit visar vad som ändrades.
