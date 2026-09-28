@@ -1,0 +1,4 @@
+# Hemlig: flodets HTTP-URL innehaller en signatur (sig=) som fungerar som ett losenord
+flow-url.txt
+# Genereras av build-v39.sh och innehaller URL:en ovan
+cloud-init.generated.txt
