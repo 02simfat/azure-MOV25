@@ -18,7 +18,7 @@ Varje veckomapp har en egen README som dokumenterar veckans arbete, med syfte, s
 - [x] V36 - Nätverk och säkerhet
 - [x] V37 - Storage
 - [x] V38 - IaC med ARM-templates
-- [ ] V39 - Automation och integration
+- [x] V39 - Automation och integration
 - [ ] v40 - Virtualiseringsnivåer
 
 ## Om Novatrix
