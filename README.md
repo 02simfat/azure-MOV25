@@ -17,7 +17,7 @@ Varje veckomapp har en egen README som dokumenterar veckans arbete, med syfte, s
 - [x] V35 - IAM och identitet
 - [x] V36 - Nätverk och säkerhet
 - [x] V37 - Storage
-- [ ] V38 - IaC med ARM-templates
+- [x] V38 - IaC med ARM-templates
 - [ ] V39 - Automation och integration
 - [ ] v40 - Virtualiseringsnivåer
 
