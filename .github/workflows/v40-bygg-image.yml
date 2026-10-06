@@ -1,0 +1,50 @@
+# v40-bygg-image.yml - GitHub Actions bygger imagen novatrix-web (V40)
+#
+# Laser receptet V40/container/Dockerfile, bygger imagen pa GitHubs server
+# och lagrar den i GitHub Container Registry: ghcr.io/02simfat/novatrix-web:v1
+#
+# Varfor har? az acr build (bygga i Azure) ar avstangt pa gratiskredit
+# (TasksOperationsNotAllowed) och Docker finns inte pa min dator.
+#
+# Startar sjalv nar nagot i V40/container andras och pushas,
+# eller for hand: fliken Actions -> V40 - bygg novatrix-web -> Run workflow.
+
+name: V40 - bygg novatrix-web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "V40/container/**"
+      - ".github/workflows/v40-bygg-image.yml"
+  workflow_dispatch:
+
+# Minsta behorighet: lasa koden och skriva till paketregistret.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  bygg-och-pusha:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hamta koden fran repot
+        uses: actions/checkout@v4
+
+      - name: Logga in i GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bygg imagen och pusha den till ghcr.io
+        uses: docker/build-push-action@v6
+        with:
+          context: V40/container
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/02simfat/novatrix-web:v1
+          labels: org.opencontainers.image.source=https://github.com/02simfat/azure-MOV25
