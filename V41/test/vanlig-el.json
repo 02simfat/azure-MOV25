@@ -1,0 +1,12 @@
+{
+  "id": "test-vanlig-001",
+  "rubrik": "Lampan i trapphuset är trasig",
+  "beskrivning": "Taklampan på våning 2 blinkar och slocknar.",
+  "kategori": "El",
+  "akut": false,
+  "fastighet": "Björken 1",
+  "lagenhet": "Trapphus B",
+  "hyresgast": "test@example.com",
+  "bild": "",
+  "skapad": "20261009T140500Z"
+}

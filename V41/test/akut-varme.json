@@ -1,0 +1,12 @@
+{
+  "id": "test-akut-001",
+  "rubrik": "Elementet är kallt",
+  "beskrivning": "Elementen i hela lägenheten är kalla sedan i morse.",
+  "kategori": "Värme",
+  "akut": true,
+  "fastighet": "Eken 4",
+  "lagenhet": "1102",
+  "hyresgast": "test@example.com",
+  "bild": "",
+  "skapad": "20261009T140000Z"
+}

@@ -1,0 +1,385 @@
+#cloud-config
+# V41 Nordvik hyresgastportal - felanmalan.
+# Reser en webbserver (nginx + Flask) som tar emot en felanmalan (rubrik,
+# beskrivning, kategori, fastighet, lagenhet, bild), sparar den i Blob Storage
+# med serverns hanterade identitet och skickar den vidare till Power Automate.
+#
+# Samma fil anvands av ALLA instanser i scale settet. Inget sparas lokalt pa
+# servern, sa en instans kan forsvinna utan att nagon felanmalan forsvinner.
+#
+# Mall med platshallare: stnordvikXXXX och FLOW_URL = "" fylls i av
+# build-skriptet i en lokal kopia (cloud-init.generated.txt) som aldrig committas.
+# Ren ASCII med flit, sa att az --custom-data inte forstor filen.
+# Svenska tecken skrivs som HTML-koder (&auml;) eller Python-koder (\u00e4).
+package_update: true
+
+packages:
+  - nginx
+  - python3
+  - python3-pip
+
+write_files:
+  - path: /opt/felanmalan/app.py
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # -*- coding: ascii -*-
+      # Nordvik felanmalan - backend (V41).
+      # Tar emot formularet, kontrollerar falten, sparar felanmalan och bild i
+      # Blob Storage med hanterad identitet (ingen nyckel) och skickar den
+      # vidare till Power Automate-flodet.
+
+      import html
+      import json
+      import logging
+      import os
+      import socket
+      import urllib.request
+      import uuid
+      from datetime import datetime, timezone
+
+      from flask import Flask, request, Response
+      from werkzeug.utils import secure_filename
+      from azure.identity import DefaultAzureCredential
+      from azure.storage.blob import BlobServiceClient, ContentSettings
+
+      # --- Installningar (fylls i av build-skriptet) ------------------------
+      STORAGE_ACCOUNT = "stnordvikXXXX"
+      CONTAINER = "felanmalningar"
+      FLOW_URL = ""
+
+      # --- Nordviks regler --------------------------------------------------
+      # Vardena maste vara EXAKT samma som i SharePoint: valkolumnen Kategori
+      # och listan Fastigheter. Annars hittar flodet ingen forvaltare.
+      KATEGORIER = [
+          "V\u00e4rme", "Vatten", "L\u00e5s", "El", "Ventilation",
+          "Vitvaror", "Tv\u00e4ttstuga", "\u00d6vrigt",
+      ]
+      AKUTA = {"V\u00e4rme", "Vatten", "L\u00e5s"}
+      FASTIGHETER = ["Bj\u00f6rken 1", "Eken 4", "Linden 7"]
+      BILDTYPER = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"}
+      MAX_BILD = 10 * 1024 * 1024  # 10 MB, samma grans som i nginx
+
+      ACCOUNT_URL = "https://{0}.blob.core.windows.net".format(STORAGE_ACCOUNT)
+      INSTANS = socket.gethostname()  # vilken server i scale settet som svarar
+
+      logging.basicConfig(level=logging.INFO,
+                          format="%(asctime)s %(levelname)s %(message)s")
+      log = logging.getLogger("felanmalan")
+
+      app = Flask(__name__)
+      # Flask stoppar for stora anrop: bilden plus lite marginal for falten.
+      app.config["MAX_CONTENT_LENGTH"] = MAX_BILD + 1024 * 1024
+
+      # DefaultAzureCredential hittar serverns hanterade identitet automatiskt.
+      # Det finns ingen nyckel eller losenord i koden.
+      _credential = DefaultAzureCredential()
+      _blob_service = BlobServiceClient(account_url=ACCOUNT_URL,
+                                        credential=_credential)
+
+
+      def _sida(titel, innehall, status=200):
+          # En enkel HTML-sida. Texten ar redan HTML-kodad av den som anropar.
+          body = (
+              "<!DOCTYPE html><html lang='sv'><head><meta charset='UTF-8'>"
+              "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+              "<title>" + titel + "</title></head>"
+              "<body style='font-family:Arial,sans-serif;max-width:640px;"
+              "margin:40px auto;padding:0 16px;line-height:1.6;color:#1f2d3d'>"
+              + innehall +
+              "<p><a href='/'>Tillbaka till formul&auml;ret</a></p>"
+              "</body></html>"
+          )
+          return Response(body, status=status, mimetype="text/html")
+
+
+      def _validera(f, bild):
+          # Kontrollerar formularet. Returnerar en lista med fel (tom = ok).
+          # Webblasaren kontrollerar ocksa, men servern far aldrig lita pa det.
+          fel = []
+          if not f["rubrik"] or len(f["rubrik"]) > 100:
+              fel.append("Rubrik saknas eller &auml;r f&ouml;r l&aring;ng (max 100 tecken).")
+          if not f["beskrivning"] or len(f["beskrivning"]) > 2000:
+              fel.append("Beskrivning saknas eller &auml;r f&ouml;r l&aring;ng (max 2000 tecken).")
+          if f["kategori"] not in KATEGORIER:
+              fel.append("V&auml;lj en kategori i listan.")
+          if f["fastighet"] not in FASTIGHETER:
+              fel.append("V&auml;lj en fastighet i listan.")
+          if not f["lagenhet"] or len(f["lagenhet"]) > 30:
+              fel.append("L&auml;genhet/lokal saknas eller &auml;r f&ouml;r l&aring;ng.")
+          if "@" not in f["hyresgast"] or len(f["hyresgast"]) > 100:
+              fel.append("Skriv en giltig e-postadress.")
+          if bild is not None:
+              ext = os.path.splitext(bild.filename)[1].lower()
+              if ext not in BILDTYPER or not (bild.mimetype or "").startswith("image/"):
+                  fel.append("Bilden m&aring;ste vara jpg, png, gif, webp eller heic.")
+          return fel
+
+
+      def _skicka_till_flode(felanmalan):
+          # Skickar felanmalan till Power Automate. Ligger i try/except: om
+          # flodet ar nere finns felanmalan anda kvar i lagringen.
+          if not FLOW_URL:
+              log.warning("FLOW_URL saknas, flodet anropas inte (id %s)", felanmalan["id"])
+              return
+          try:
+              data = json.dumps(felanmalan, ensure_ascii=False).encode("utf-8")
+              req = urllib.request.Request(
+                  FLOW_URL, data=data, method="POST",
+                  headers={"Content-Type": "application/json; charset=utf-8"},
+              )
+              with urllib.request.urlopen(req, timeout=10) as svar:
+                  log.info("Flodet svarade %s for id %s", svar.status, felanmalan["id"])
+          except Exception as e:
+              # Logga bara felets typ. Hela felet kan innehalla flodets URL.
+              log.error("Flodet kunde inte anropas for id %s: %s",
+                        felanmalan["id"], type(e).__name__)
+
+
+      @app.post("/submit")
+      def submit():
+          # 1) Las falten. Namnen maste matcha name="..." i index.html.
+          f = {
+              "rubrik": request.form.get("rubrik", "").strip(),
+              "beskrivning": request.form.get("beskrivning", "").strip(),
+              "kategori": request.form.get("kategori", "").strip(),
+              "fastighet": request.form.get("fastighet", "").strip(),
+              "lagenhet": request.form.get("lagenhet", "").strip(),
+              "hyresgast": request.form.get("hyresgast", "").strip(),
+          }
+          bild = request.files.get("bild")
+          if bild is not None and not bild.filename:
+              bild = None  # faltet fanns men ingen fil valdes
+
+          # 2) Kontrollera. Vid fel: visa vad som ar fel, spara ingenting.
+          fel = _validera(f, bild)
+          if fel:
+              lista = "".join("<li>" + x + "</li>" for x in fel)
+              return _sida("Kontrollera formul&auml;ret",
+                           "<h1>N&aring;got saknas</h1><ul>" + lista + "</ul>", 400)
+
+          # 3) Unikt id: tid i UTC plus en kort slumpdel.
+          skapad = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+          arende_id = "{0}-{1}".format(skapad, uuid.uuid4().hex[:8])
+          akut = f["kategori"] in AKUTA
+
+          # 4) Spara i Blob Storage. En mapp per felanmalan: <id>/...
+          #    secure_filename tar bort farliga tecken ur filnamnet.
+          container = _blob_service.get_container_client(CONTAINER)
+          bild_namn = ""
+          try:
+              if bild is not None:
+                  ext = os.path.splitext(secure_filename(bild.filename))[1].lower()
+                  bild_namn = "{0}/bild{1}".format(arende_id, ext)
+                  container.upload_blob(
+                      name=bild_namn, data=bild.stream, overwrite=False,
+                      content_settings=ContentSettings(content_type=bild.mimetype),
+                  )
+              felanmalan = {
+                  "id": arende_id,
+                  "rubrik": f["rubrik"],
+                  "beskrivning": f["beskrivning"],
+                  "kategori": f["kategori"],
+                  "akut": akut,
+                  "fastighet": f["fastighet"],
+                  "lagenhet": f["lagenhet"],
+                  "hyresgast": f["hyresgast"],
+                  "bild": bild_namn,
+                  "skapad": skapad,
+                  "instans": INSTANS,
+              }
+              container.upload_blob(
+                  name="{0}/felanmalan.json".format(arende_id),
+                  data=json.dumps(felanmalan, ensure_ascii=False, indent=2).encode("utf-8"),
+                  overwrite=False,
+                  content_settings=ContentSettings(content_type="application/json; charset=utf-8"),
+              )
+          except Exception as e:
+              log.error("Kunde inte spara id %s: %s", arende_id, e)
+              return _sida("Tekniskt fel",
+                           "<h1>Tekniskt fel</h1><p>Felanm&auml;lan kunde inte sparas. "
+                           "F&ouml;rs&ouml;k igen om en stund.</p>", 503)
+          log.info("Sparad id %s (akut=%s)", arende_id, akut)
+
+          # 5) Skicka vidare till Power Automate (SharePoint, Teams, mejl).
+          _skicka_till_flode(felanmalan)
+
+          # 6) Tack-sida. html.escape stoppar att HTML i falten kors (XSS).
+          akut_text = ""
+          if akut:
+              akut_text = ("<p style='background:#fdecea;padding:12px;border-left:4px solid #c0392b'>"
+                           "<strong>Akut fel.</strong> Din f&ouml;rvaltare f&aring;r ett mejl direkt.</p>")
+          return _sida(
+              "Tack",
+              "<h1>Tack! Din felanm&auml;lan &auml;r mottagen.</h1>"
+              "<p>&Auml;rende-ID: <code>" + arende_id + "</code></p>"
+              "<p>" + html.escape(f["fastighet"]) + ", " + html.escape(f["lagenhet"]) +
+              " &middot; " + html.escape(f["kategori"]) + "</p>"
+              + akut_text +
+              "<p>Spara &auml;rende-ID:t om du vill fr&aring;ga om din anm&auml;lan.</p>",
+          )
+
+
+      @app.get("/health")
+      def health():
+          # Lastbalanseraren fragar har om servern lever. Kollar bara den egna
+          # servern, inte lagringen: om lagringen ar nere ska inte ALLA
+          # instanser tas ur drift samtidigt.
+          return {"status": "ok", "instans": INSTANS, "flode": bool(FLOW_URL)}
+
+
+      if __name__ == "__main__":
+          # Lyssnar bara pa localhost. nginx ligger framfor och skickar vidare.
+          app.run(host="127.0.0.1", port=5000)
+
+
+  - path: /var/www/html/index.html
+    owner: root:root
+    permissions: '0644'
+    content: |
+      <!DOCTYPE html>
+      <html lang="sv">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Nordvik &ndash; Felanm&auml;lan</title>
+        <style>
+          body { font-family: Arial, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1f2d3d; line-height: 1.6; }
+          h1 { color: #1d5c4d; margin-bottom: 4px; }
+          .info { background: #eef6f3; border-left: 4px solid #1d5c4d; padding: 12px; }
+          form { display: grid; gap: 10px; margin-top: 24px; }
+          label { font-weight: bold; }
+          input, select, textarea { width: 100%; padding: 10px; font-size: 16px; box-sizing: border-box; }
+          button { padding: 12px; font-size: 16px; background: #1d5c4d; color: #fff; border: none; cursor: pointer; }
+          small { color: #555; }
+          footer { margin-top: 32px; color: #777; font-size: 14px; }
+        </style>
+      </head>
+      <body>
+        <h1>Nordvik Fastigheter</h1>
+        <p>Hyresg&auml;stportal &ndash; felanm&auml;lan</p>
+        <p class="info"><strong>Akuta fel</strong> (v&auml;rme, vatten, l&aring;s) skickas direkt till din f&ouml;rvaltare via mejl.</p>
+
+        <!-- enctype multipart/form-data behovs for att bilden ska folja med -->
+        <form action="/submit" method="post" enctype="multipart/form-data">
+          <label for="rubrik">Rubrik</label>
+          <input type="text" id="rubrik" name="rubrik" maxlength="100" required placeholder="Till exempel: Elementet &auml;r kallt">
+
+          <label for="fastighet">Fastighet</label>
+          <select id="fastighet" name="fastighet" required>
+            <option value="">V&auml;lj fastighet</option>
+            <option value="Bj&ouml;rken 1">Bj&ouml;rken 1</option>
+            <option value="Eken 4">Eken 4</option>
+            <option value="Linden 7">Linden 7</option>
+          </select>
+
+          <label for="lagenhet">L&auml;genhet/lokal</label>
+          <input type="text" id="lagenhet" name="lagenhet" maxlength="30" required placeholder="Till exempel: 1102">
+
+          <label for="kategori">Kategori</label>
+          <select id="kategori" name="kategori" required>
+            <option value="">V&auml;lj kategori</option>
+            <option value="V&auml;rme">V&auml;rme (akut)</option>
+            <option value="Vatten">Vatten (akut)</option>
+            <option value="L&aring;s">L&aring;s (akut)</option>
+            <option value="El">El</option>
+            <option value="Ventilation">Ventilation</option>
+            <option value="Vitvaror">Vitvaror</option>
+            <option value="Tv&auml;ttstuga">Tv&auml;ttstuga</option>
+            <option value="&Ouml;vrigt">&Ouml;vrigt</option>
+          </select>
+
+          <label for="beskrivning">Beskrivning</label>
+          <textarea id="beskrivning" name="beskrivning" rows="5" maxlength="2000" required></textarea>
+
+          <label for="hyresgast">Din e-post</label>
+          <input type="email" id="hyresgast" name="hyresgast" maxlength="100" required>
+
+          <label for="bild">Bild p&aring; felet</label>
+          <input type="file" id="bild" name="bild" accept="image/*">
+          <small>Max 10 MB. jpg, png, gif, webp eller heic.</small>
+
+          <button type="submit">Skicka felanm&auml;lan</button>
+        </form>
+
+        <footer>Nordvik Fastigheter AB</footer>
+      </body>
+      </html>
+
+
+  - path: /etc/nginx/sites-available/default
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # nginx for Nordviks felanmalan (V41).
+      # nginx visar formularet och skickar /submit och /health vidare till Flask.
+
+      # Max 10 felanmalningar per minut fran samma IP-adress (skydd mot spam).
+      # Lastbalanseraren behaller kundens IP, sa grensen galler per hyresgast.
+      limit_req_zone $binary_remote_addr zone=felanmalan:10m rate=10r/m;
+
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+
+          root /var/www/html;
+          index index.html;
+
+          server_tokens off;              # visa inte nginx-versionen
+          client_max_body_size 10m;       # samma grans som i app.py
+
+          # Sakerhetsrubriker till webblasaren
+          add_header X-Content-Type-Options nosniff always;
+          add_header X-Frame-Options DENY always;
+          add_header Referrer-Policy no-referrer always;
+
+          location / {
+              try_files $uri $uri/ =404;
+          }
+
+          # Formularet skickas hit. Bara POST tillats.
+          location = /submit {
+              limit_except POST { deny all; }
+              limit_req zone=felanmalan burst=5 nodelay;
+              limit_req_status 429;
+              proxy_pass http://127.0.0.1:5000/submit;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+          }
+
+          # Lastbalanserarens halsokontroll. Gar hela vagen till Flask, sa att
+          # en server dar appen har kraschat tas ur drift.
+          location = /health {
+              proxy_pass http://127.0.0.1:5000/health;
+          }
+      }
+
+
+  - path: /etc/systemd/system/felanmalan.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # systemd-tjanst for Flask-appen. Startar vid boot och om den kraschar.
+      [Unit]
+      Description=Nordvik felanmalan (Flask)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      WorkingDirectory=/opt/felanmalan
+      ExecStart=/usr/bin/python3 /opt/felanmalan/app.py
+      Restart=on-failure
+      User=www-data
+
+      [Install]
+      WantedBy=multi-user.target
+
+
+runcmd:
+  # Azure-paketen som appen behover (Flask, inloggning, Blob Storage).
+  - pip3 install flask azure-identity azure-storage-blob || pip3 install --break-system-packages flask azure-identity azure-storage-blob
+  # Starta appen och se till att den startar igen efter omstart.
+  - systemctl daemon-reload
+  - systemctl enable --now felanmalan
+  # Testa nginx-konfigen och starta om nginx med den nya konfigen.
+  - nginx -t && systemctl restart nginx
