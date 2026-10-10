@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix": { "value": "nordvik" },
+    "location": { "value": "swedencentral" },
+    "storageName": { "value": "stnordvik02simfat02" },
+    "storageSku": { "value": "Standard_LRS" },
+    "vnetAddressPrefix": { "value": "10.20.0.0/16" },
+    "webSubnetPrefix": { "value": "10.20.1.0/24" },
+    "dokumentTillCoolDagar": { "value": 90 },
+    "tags": {
+      "value": {
+        "foretag": "Nordvik",
+        "projekt": "hyresgastportal",
+        "avdelning": "Forvaltning",
+        "fastighet": "Gemensam",
+        "miljo": "test"
+      }
+    }
+  }
+}

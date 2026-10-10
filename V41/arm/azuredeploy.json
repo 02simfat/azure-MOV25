@@ -1,0 +1,259 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Nordvik hyresgastportal (V41): natverk, NSG och saker lagring for felanmalningar och dokument."
+  },
+  "parameters": {
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "nordvik",
+      "metadata": { "description": "Foretagsnamnet i alla resursnamn: vnet-nordvik, nsg-nordvik-web." }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": { "description": "Region. Samma som resursgruppen om inget annat anges." }
+    },
+    "storageName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 24,
+      "metadata": { "description": "Globalt unikt: st + nordvik + anvandarnamn + lopnummer, t.ex. stnordvik02simfat01." }
+    },
+    "storageSku": {
+      "type": "string",
+      "defaultValue": "Standard_ZRS",
+      "allowedValues": [ "Standard_LRS", "Standard_ZRS" ],
+      "metadata": { "description": "ZRS i drift (kopior i tre zoner), LRS i test (billigast)." }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.10.0.0/16"
+    },
+    "webSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.10.1.0/24"
+    },
+    "adminIp": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": { "description": "Admins publika IP. Far SSH och komma at lagringen fran portalen. Tomt = ingen admin-oppning." }
+    },
+    "dokumentTillCoolDagar": {
+      "type": "int",
+      "defaultValue": 90,
+      "metadata": { "description": "Kontrakt och protokoll flyttas till Cool efter sa manga dagar (lases sallan efter 3 manader)." }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {
+        "foretag": "Nordvik",
+        "projekt": "hyresgastportal",
+        "avdelning": "Forvaltning",
+        "fastighet": "Gemensam",
+        "miljo": "prod"
+      },
+      "metadata": { "description": "Taggar sa att Ekonomi kan folja kostnaden per fastighet och avdelning." }
+    }
+  },
+  "variables": {
+    "vnetName": "[concat('vnet-', parameters('namePrefix'))]",
+    "subnetName": "snet-web",
+    "nsgName": "[concat('nsg-', parameters('namePrefix'), '-web')]",
+    "subnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]",
+    "webRules": [
+      {
+        "name": "allow-http-internet",
+        "properties": {
+          "description": "Portalen ar publik: HTTP fran internet till webbservrarna.",
+          "priority": 100,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "Internet",
+          "sourcePortRange": "*",
+          "destinationAddressPrefix": "[parameters('webSubnetPrefix')]",
+          "destinationPortRange": "80"
+        }
+      }
+    ],
+    "sshRule": [
+      {
+        "name": "allow-ssh-admin",
+        "properties": {
+          "description": "SSH bara fran admins egen IP (felsokning).",
+          "priority": 110,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "[parameters('adminIp')]",
+          "sourcePortRange": "*",
+          "destinationAddressPrefix": "[parameters('webSubnetPrefix')]",
+          "destinationPortRange": "22"
+        }
+      }
+    ],
+    "storageIpRules": [
+      {
+        "value": "[parameters('adminIp')]",
+        "action": "Allow"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-09-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "securityRules": "[if(empty(parameters('adminIp')), variables('webRules'), concat(variables('webRules'), variables('sshRule')))]"
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-09-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ],
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [ "[parameters('vnetAddressPrefix')]" ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('webSubnetPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              },
+              "serviceEndpoints": [
+                {
+                  "service": "Microsoft.Storage",
+                  "locations": [ "[parameters('location')]" ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[parameters('storageName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ],
+      "sku": { "name": "[parameters('storageSku')]" },
+      "kind": "StorageV2",
+      "properties": {
+        "accessTier": "Hot",
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "publicNetworkAccess": "Enabled",
+        "networkAcls": {
+          "defaultAction": "Deny",
+          "bypass": "AzureServices",
+          "virtualNetworkRules": [
+            {
+              "id": "[variables('subnetId')]",
+              "action": "Allow"
+            }
+          ],
+          "ipRules": "[if(empty(parameters('adminIp')), createArray(), variables('storageIpRules'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('storageName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageName'))]"
+      ],
+      "properties": {
+        "deleteRetentionPolicy": { "enabled": true, "days": 7 },
+        "containerDeleteRetentionPolicy": { "enabled": true, "days": 7 }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('storageName'), '/default/felanmalningar')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageName'), 'default')]"
+      ],
+      "properties": { "publicAccess": "None" }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('storageName'), '/default/dokument')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageName'), 'default')]"
+      ],
+      "properties": { "publicAccess": "None" }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/managementPolicies",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('storageName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageName'))]"
+      ],
+      "properties": {
+        "policy": {
+          "rules": [
+            {
+              "name": "dokument-till-cool",
+              "enabled": true,
+              "type": "Lifecycle",
+              "definition": {
+                "filters": {
+                  "blobTypes": [ "blockBlob" ],
+                  "prefixMatch": [ "dokument/" ]
+                },
+                "actions": {
+                  "baseBlob": {
+                    "tierToCool": {
+                      "daysAfterModificationGreaterThan": "[parameters('dokumentTillCoolDagar')]"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "storageName": {
+      "type": "string",
+      "value": "[parameters('storageName')]"
+    },
+    "storageId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageName'))]"
+    },
+    "felanmalningarId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageName'), 'default', 'felanmalningar')]"
+    },
+    "subnetId": {
+      "type": "string",
+      "value": "[variables('subnetId')]"
+    }
+  }
+}

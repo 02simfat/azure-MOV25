@@ -7,8 +7,9 @@
 # Samma fil anvands av ALLA instanser i scale settet. Inget sparas lokalt pa
 # servern, sa en instans kan forsvinna utan att nagon felanmalan forsvinner.
 #
-# Mall med platshallare: stnordvikXXXX och FLOW_URL = "" fylls i av
-# build-skriptet i en lokal kopia (cloud-init.generated.txt) som aldrig committas.
+# Mall med platshallare: lagringskontot och flodets URL (se STORAGE_ACCOUNT
+# och FLOW_URL i app.py nedan) fylls i av build.sh i en lokal kopia,
+# cloud-init.generated.txt, som aldrig committas.
 # Ren ASCII med flit, sa att az --custom-data inte forstor filen.
 # Svenska tecken skrivs som HTML-koder (&auml;) eller Python-koder (\u00e4).
 package_update: true
